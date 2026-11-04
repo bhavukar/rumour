@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "382375200319",
+    "project_id": "rumour-anon-chat",
+    "storage_bucket": "rumour-anon-chat.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:382375200319:android:a71f53f8566b2735fa9a8a",
+        "android_client_info": {
+          "package_name": "com.voiceclub.rumour"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBOcDAVJUPDSHt9pmtWH3fcbUuOwUi6rFw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

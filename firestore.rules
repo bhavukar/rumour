@@ -1,0 +1,378 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: /users/{userId}
+    // Document ID: {userId} - Matches request.auth.uid (Firebase Auth anonymous UID, 1..128 chars)
+    // Fields:
+    //   - id: string, required, matches userId, immutable
+    //   - isAnonymous: bool, required, immutable
+    //   - createdAt: timestamp, required, server or client timestamp, immutable
+    //   - lastSeenAt: timestamp, required, server or client timestamp, mutable
+    //   - displayName: string, optional, 1..60 chars, mutable
+    //   - avatarUrl: string or null, optional/nullable, <= 500 chars, mutable
+    //
+    // Collection: /rooms/{roomId}
+    // Document ID: {roomId} - Uppercase alphanumeric string, 4 to 10 chars (e.g., 'ABCD', 'ROOM42')
+    // Fields:
+    //   - code: string, required, matches roomId, immutable
+    //   - memberCount: int, required (initial is 1, >= 0), incremented by 1 on update
+    //   - createdAt: timestamp, required, server or client timestamp, immutable
+    //   - createdBy: string, required, member UUID / UID (1..128 chars), immutable
+    //   - lastMessageAt: timestamp, optional on create, updated on message send
+    //   - lastMessageText: string, optional, 1..2000 chars, updated on message send
+    //   - lastMessageSender: string, optional, 1..60 chars, updated on message send
+    //   - lastMessageSenderId: string, optional, 1..128 chars, matches isValidId, updated on message send
+    //
+    // Collection: /rooms/{roomId}/members/{memberId}
+    // Document ID: {memberId} - Member UUID / UID string (1..128 chars)
+    // Fields:
+    //   - id: string, required, matches memberId, immutable
+    //   - memberId: string, optional, matches memberId if present, immutable
+    //   - displayName: string, required, 1..60 chars, mutable
+    //   - avatarUrl: string or null, optional/nullable, <= 500 chars (valid http/https URL, empty string, or null), mutable
+    //   - joinedAt: timestamp, required, server or client timestamp, immutable
+    //
+    // Collection: /rooms/{roomId}/messages/{messageId}
+    // Document ID: {messageId} - Message UUID string (1..128 chars)
+    // Fields:
+    //   - id: string, required, matches messageId, immutable
+    //   - roomId: string, required, matches roomId, immutable
+    //   - senderId: string, required, 1..128 chars, matches isValidId (anonymous UID or persona UUID), immutable
+    //   - senderName: string, required, 1..60 chars, immutable
+    //   - senderMention: string, required, 1..80 chars, immutable
+    //   - senderAvatarUrl: string or null, optional/nullable, <= 1000 chars, immutable
+    //   - text: string, required, 1..2000 chars, immutable
+    //   - createdAt: timestamp, required, server or client timestamp, immutable
+    //   - type: string, required, 'text' or 'system', immutable
+    //   - replyToId: string, optional, 1..128 chars, immutable
+    //   - replyToSenderName: string, optional, 1..60 chars, immutable
+    //   - replyToText: string, optional, 1..2000 chars, immutable
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // General Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated with Firebase Auth
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if the authenticated user is the document owner
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Check if the client is authenticated owner or unauthenticated guest
+    function isMemberOwner(memberId) {
+      return !isAuthenticated() || request.auth.uid == memberId;
+    }
+
+    // Validate that only allowed fields exist in the document (Strict Schema)
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validate that all required fields are present in the document
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Validate string ID length and characters (UUID / alphanumeric with hyphens & underscores)
+    function isValidId(id) {
+      return id is string &&
+             id.size() >= 1 &&
+             id.size() <= 128 &&
+             id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    // Validate URL format for optional profile avatars
+    function isValidUrl(url) {
+      return url is string &&
+             url.size() <= 500 &&
+             (url.matches('^https://.*') || url.matches('^http://.*'));
+    }
+
+    // Validate nullable or optional avatar URL (null, empty string, or valid http/https URL)
+    function isValidNullableAvatarUrl(data) {
+      return !('avatarUrl' in data) ||
+             data.avatarUrl == null ||
+             (data.avatarUrl is string &&
+              data.avatarUrl.size() <= 500 &&
+              (data.avatarUrl == '' || isValidUrl(data.avatarUrl)));
+    }
+
+    // Validate that a timestamp is server timestamp or recent client timestamp (with clock drift tolerance)
+    function isRecentOrServerTimestamp(time) {
+      return time is timestamp &&
+             (time == request.time ||
+              (time >= request.time - duration.value(24, 'h') &&
+               time <= request.time + duration.value(10, 'm')));
+    }
+
+    // Validates room code format (uppercase alphanumeric string between 4 and 10 characters)
+    function isValidRoomCode(code) {
+      return code is string &&
+             code.size() >= 4 &&
+             code.size() <= 10 &&
+             code.matches('^[A-Z0-9]{4,10}$');
+    }
+
+    // ===============================================================
+    // Domain Validator Functions: Users
+    // ===============================================================
+
+    // Validates base structure of user document
+    function isValidUserDocument(data) {
+      return hasOnlyAllowedFields(['id', 'isAnonymous', 'createdAt', 'lastSeenAt', 'displayName', 'avatarUrl']) &&
+             hasRequiredFields(['id', 'isAnonymous', 'createdAt', 'lastSeenAt']) &&
+             data.id is string &&
+             isValidId(data.id) &&
+             data.isAnonymous is bool &&
+             data.createdAt is timestamp &&
+             data.lastSeenAt is timestamp &&
+             (!('displayName' in data) ||
+              (data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60)) &&
+             isValidNullableAvatarUrl(data);
+    }
+
+    // Validates user creation
+    function isValidUserCreate(userId, data) {
+      return isValidUserDocument(data) &&
+             data.id == userId &&
+             isRecentOrServerTimestamp(data.createdAt) &&
+             isRecentOrServerTimestamp(data.lastSeenAt);
+    }
+
+    // Validates user update (only lastSeenAt, displayName, avatarUrl may change; id, isAnonymous, createdAt immutable)
+    function isValidUserUpdate(userId) {
+      let affected = request.resource.data.diff(resource.data).affectedKeys();
+      return affected.size() > 0 &&
+             affected.hasOnly(['lastSeenAt', 'displayName', 'avatarUrl']) &&
+             isValidUserDocument(request.resource.data) &&
+             request.resource.data.id == userId &&
+             request.resource.data.id == resource.data.id &&
+             request.resource.data.isAnonymous == resource.data.isAnonymous &&
+             request.resource.data.createdAt == resource.data.createdAt &&
+             (!affected.hasAny(['lastSeenAt']) || isRecentOrServerTimestamp(request.resource.data.lastSeenAt));
+    }
+
+    // ===============================================================
+    // Domain Validator Functions: Rooms
+    // ===============================================================
+
+    // Validates base structure of room document
+    function isValidRoomDocument(data) {
+      return hasOnlyAllowedFields(['code', 'memberCount', 'createdAt', 'createdBy', 'lastMessageAt', 'lastMessageText', 'lastMessageSender', 'lastMessageSenderId']) &&
+             hasRequiredFields(['code', 'memberCount', 'createdAt', 'createdBy']) &&
+             data.code is string &&
+             isValidRoomCode(data.code) &&
+             data.memberCount is int &&
+             data.memberCount >= 0 &&
+             data.createdAt is timestamp &&
+             data.createdBy is string &&
+             data.createdBy.size() >= 1 &&
+             data.createdBy.size() <= 128 &&
+             isValidId(data.createdBy) &&
+             (!('lastMessageAt' in data) ||
+              (data.lastMessageAt is timestamp && isRecentOrServerTimestamp(data.lastMessageAt))) &&
+             (!('lastMessageText' in data) ||
+              (data.lastMessageText is string && data.lastMessageText.size() >= 1 && data.lastMessageText.size() <= 2000)) &&
+             (!('lastMessageSender' in data) ||
+              (data.lastMessageSender is string && data.lastMessageSender.size() >= 1 && data.lastMessageSender.size() <= 60)) &&
+             (!('lastMessageSenderId' in data) ||
+              (data.lastMessageSenderId is string && data.lastMessageSenderId.size() >= 1 && data.lastMessageSenderId.size() <= 128 && isValidId(data.lastMessageSenderId)));
+    }
+
+    // Validates room creation
+    function isValidRoomCreate(roomId, data) {
+      return isValidRoomDocument(data) &&
+             data.code == roomId &&
+             data.memberCount >= 0 &&
+             (!isAuthenticated() || data.createdBy == request.auth.uid || isValidId(data.createdBy)) &&
+             isRecentOrServerTimestamp(data.createdAt);
+    }
+
+    // Validates room update (only memberCount +1 increment and/or latest message metadata may change; metadata is immutable)
+    function isValidRoomUpdate() {
+      let affected = request.resource.data.diff(resource.data).affectedKeys();
+      return affected.size() > 0 &&
+             affected.hasOnly(['memberCount', 'lastMessageAt', 'lastMessageText', 'lastMessageSender', 'lastMessageSenderId']) &&
+             isValidRoomDocument(request.resource.data) &&
+             request.resource.data.code == resource.data.code &&
+             request.resource.data.createdAt == resource.data.createdAt &&
+             request.resource.data.createdBy == resource.data.createdBy &&
+             (!affected.hasAny(['memberCount']) ||
+              request.resource.data.memberCount == resource.data.memberCount + 1) &&
+             (!affected.hasAny(['lastMessageAt']) ||
+              (request.resource.data.lastMessageAt is timestamp &&
+               isRecentOrServerTimestamp(request.resource.data.lastMessageAt)));
+    }
+
+    // ===============================================================
+    // Domain Validator Functions: Members
+    // ===============================================================
+
+    // Validates base structure of member document
+    function isValidMemberDocument(data) {
+      return hasOnlyAllowedFields(['id', 'displayName', 'avatarUrl', 'joinedAt', 'memberId']) &&
+             hasRequiredFields(['id', 'displayName', 'joinedAt']) &&
+             data.id is string &&
+             data.id.size() >= 1 &&
+             data.id.size() <= 128 &&
+             isValidId(data.id) &&
+             data.displayName is string &&
+             data.displayName.size() >= 1 &&
+             data.displayName.size() <= 60 &&
+             data.joinedAt is timestamp &&
+             isValidNullableAvatarUrl(data) &&
+             (!('memberId' in data) ||
+              (data.memberId is string && data.memberId.size() >= 1 && data.memberId.size() <= 128 && isValidId(data.memberId)));
+    }
+
+    // Validates member creation / room join
+    function isValidMemberCreate(memberId, data) {
+      return isValidMemberDocument(data) &&
+             data.id == memberId &&
+             (!('memberId' in data) || data.memberId == memberId) &&
+             (!isAuthenticated() || data.id == request.auth.uid || isValidId(data.id)) &&
+             isRecentOrServerTimestamp(data.joinedAt);
+    }
+
+    // Validates member update (only displayName and avatarUrl may change; id and joinedAt are immutable)
+    function isValidMemberUpdate(memberId) {
+      let affected = request.resource.data.diff(resource.data).affectedKeys();
+      return affected.size() > 0 &&
+             affected.hasOnly(['displayName', 'avatarUrl']) &&
+             isValidMemberDocument(request.resource.data) &&
+             request.resource.data.id == memberId &&
+             request.resource.data.id == resource.data.id &&
+             request.resource.data.joinedAt == resource.data.joinedAt &&
+             (!('memberId' in resource.data) || request.resource.data.memberId == resource.data.memberId);
+    }
+
+    // ===============================================================
+    // Domain Validator Functions: Messages
+    // ===============================================================
+
+    // Validates optional senderAvatarUrl on message
+    function isValidNullableSenderAvatarUrl(data) {
+      return !('senderAvatarUrl' in data) ||
+             data.senderAvatarUrl == null ||
+             (data.senderAvatarUrl is string &&
+              data.senderAvatarUrl.size() <= 1000 &&
+              (data.senderAvatarUrl.matches('^https?://.*') || data.senderAvatarUrl.size() == 0));
+    }
+
+    // Validates message document creation (append-only)
+    function isValidMessageCreate(roomId, messageId, data) {
+      return hasOnlyAllowedFields(['id', 'roomId', 'senderId', 'senderName', 'senderMention', 'senderAvatarUrl', 'text', 'createdAt', 'type', 'replyToId', 'replyToSenderName', 'replyToText']) &&
+             hasRequiredFields(['id', 'roomId', 'senderId', 'senderName', 'senderMention', 'text', 'createdAt', 'type']) &&
+             data.id == messageId &&
+             isValidId(data.id) &&
+             data.roomId == roomId &&
+             isValidRoomCode(data.roomId) &&
+             data.senderId is string &&
+             data.senderId.size() >= 1 &&
+             data.senderId.size() <= 128 &&
+             isValidId(data.senderId) &&
+             data.senderName is string &&
+             data.senderName.size() >= 1 &&
+             data.senderName.size() <= 60 &&
+             data.senderMention is string &&
+             data.senderMention.size() >= 1 &&
+             data.senderMention.size() <= 80 &&
+             isValidNullableSenderAvatarUrl(data) &&
+             data.text is string &&
+             data.text.size() >= 1 &&
+             data.text.size() <= 2000 &&
+             data.createdAt is timestamp &&
+             isRecentOrServerTimestamp(data.createdAt) &&
+             data.type in ['text', 'system'] &&
+             (!('replyToId' in data) || (data.replyToId is string && data.replyToId.size() >= 1 && data.replyToId.size() <= 128 && isValidId(data.replyToId))) &&
+             (!('replyToSenderName' in data) || (data.replyToSenderName is string && data.replyToSenderName.size() >= 1 && data.replyToSenderName.size() <= 60)) &&
+             (!('replyToText' in data) || (data.replyToText is string && data.replyToText.size() >= 1 && data.replyToText.size() <= 2000));
+    }
+
+    // ===============================================================
+    // Root Match & Collection Rules
+    // ===============================================================
+
+    // Default deny for all unmatched paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 0. Users Collection
+    match /users/{userId} {
+      // Only the authenticated user can read their own user record (protects PII)
+      allow read: if isOwner(userId);
+
+      // Authenticated users can create their own user document
+      allow create: if isOwner(userId) &&
+                       isValidUserCreate(userId, request.resource.data);
+
+      // Authenticated users can update their own user record
+      allow update: if isOwner(userId) &&
+                       isValidUserUpdate(userId);
+
+      // User document deletion is disallowed
+      allow delete: if false;
+    }
+
+    // 1. Rooms Collection
+    match /rooms/{roomId} {
+      // Anyone with the room code can read room details
+      allow read: if isValidRoomCode(roomId);
+
+      // Anyone can create a room with matching roomId and valid initial schema
+      allow create: if isValidRoomCode(roomId) &&
+                       isValidRoomCreate(roomId, request.resource.data);
+
+      // Anyone can update memberCount (+1 increment) or latest message metadata without altering metadata
+      allow update: if isValidRoomCode(roomId) &&
+                       isValidRoomUpdate();
+
+      // Deletion of rooms is disallowed
+      allow delete: if false;
+
+      // 2. Members Subcollection
+      match /members/{memberId} {
+        // Anyone in the room can read members
+        allow read: if isValidRoomCode(roomId);
+
+        // Anyone can join a room by creating their member document
+        allow create: if isValidRoomCode(roomId) &&
+                         isValidMemberCreate(memberId, request.resource.data);
+
+        // Members can update their own displayName and avatarUrl
+        allow update: if isValidRoomCode(roomId) &&
+                         isMemberOwner(memberId) &&
+                         isValidMemberUpdate(memberId);
+
+        // Deletion of members is disallowed
+        allow delete: if false;
+      }
+
+      // 3. Messages Subcollection
+      match /messages/{messageId} {
+        // Anyone in the room can read and stream messages
+        allow read: if isValidRoomCode(roomId);
+
+        // Anyone in the room can append a message complying with strict schema
+        allow create: if isValidRoomCode(roomId) &&
+                         isValidMessageCreate(roomId, messageId, request.resource.data);
+
+        // Messages are append-only: updates and deletes are disallowed
+        allow update, delete: if false;
+      }
+    }
+  }
+}

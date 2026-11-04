@@ -1,0 +1,6 @@
+{
+  "name": "rumour",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Rumour - Anonymous ephemeral room-code chat application"
+}

@@ -1,0 +1,5 @@
+name = "rumour-fcm"
+main = "index.js"
+compatibility_date = "2024-04-05"
+account_id = "6043b508171485d9a9a662cd29a81e05"
+workers_dev = true
