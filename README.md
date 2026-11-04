@@ -8,7 +8,7 @@ Anonymous room-code real-time chat application built with Flutter, BLoC, and Clo
 
 - Working APK: [releases/rumour-v1.0.0.apk](releases/rumour-v1.0.0.apk)
 - Universal APK (All ABIs): [releases/rumour-universal-v1.0.0.apk](releases/rumour-universal-v1.0.0.apk)
-- Video Demonstration: [Watch Complete Workflow Video](VIDEO_LINK_HERE)
+- Video Demonstration: [Watch Complete Workflow Video](https://drive.google.com/file/d/1OvldAAHs009flmcckt3gOYfP6IjsOWRZ/view)
 
 ---
 
