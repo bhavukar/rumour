@@ -106,8 +106,7 @@ class RoomRepository {
   }
 
   Future<List<String>> syncAndPruneJoinedRooms(List<String> roomCodes) async {
-    final validRooms = <String>[];
-    for (final code in roomCodes) {
+    final results = await Future.wait(roomCodes.map((code) async {
       try {
         final snap = await remoteSource
             .getRoomSnapshot(code)
@@ -122,14 +121,15 @@ class RoomRepository {
           );
           await localSource.clearIdentity(code);
           await localSource.storageService.clearCachedMessages(code);
-        } else {
-          validRooms.add(code);
+          return null;
         }
+        return code;
       } catch (e) {
         // Keep room in case of network interruption or timeout
-        validRooms.add(code);
+        return code;
       }
-    }
-    return validRooms;
+    }));
+
+    return results.whereType<String>().toList();
   }
 }

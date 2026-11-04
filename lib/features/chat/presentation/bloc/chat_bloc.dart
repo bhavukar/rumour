@@ -69,7 +69,13 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           stackTrace: stackTrace,
         );
         if (state is! ChatLoaded) {
-          emit(ChatError(error.toString()));
+          final fallbackCached =
+              chatRepository.getCachedMessages(event.roomCode);
+          if (fallbackCached.isNotEmpty) {
+            emit(ChatLoaded(messages: fallbackCached, hasMoreOlder: true));
+          } else {
+            emit(ChatError(error.toString()));
+          }
         }
       },
     );

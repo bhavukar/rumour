@@ -15,47 +15,45 @@ void main() async {
   final widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
 
-  // Fast local configuration loading
+  // Fast parallel initialization of local dependencies
   await EnvConfig.initialize();
-  final localStorageService = await LocalStorageService.init();
+  final results = await Future.wait([
+    LocalStorageService.init(),
+    FirebaseService.initializeCore().catchError((e) {
+      LoggerService.warn('Firebase core initialization warning: $e');
+    }),
+  ]);
 
-  // Initialize Firebase core locally (registers options in memory without blocking)
-  try {
-    await FirebaseService.initializeCore().timeout(const Duration(seconds: 2));
-  } catch (e) {
-    LoggerService.warn('Firebase core initialization timeout: $e');
-  }
+  final localStorageService = results[0] as LocalStorageService;
 
-  // Mount UI immediately so app launches instantly even completely offline
+  // Mount UI immediately for an instant opening experience
   runApp(
     AppConfiguration(
       localStorageService: localStorageService,
     ),
   );
 
-  // Guaranteed splash removal once app is mounted
+  // Remove native splash as soon as the first frame is mounted
   FlutterNativeSplash.remove();
 
-  // Background non-blocking network and notification initialization
+  // Background non-blocking network and notification initialization in parallel
   unawaited(_initializeBackgroundServices());
 }
 
 Future<void> _initializeBackgroundServices() async {
-  try {
-    await FirebaseService.ensureAnonymousAuth()
-        .timeout(const Duration(seconds: 3));
-  } catch (_) {}
-
-  try {
-    await CrashlyticsService.initialize().timeout(const Duration(seconds: 2));
-  } catch (_) {}
-
-  try {
-    await AnalyticsService.initialize().timeout(const Duration(seconds: 2));
-  } catch (_) {}
-
-  try {
-    await NotificationService.initialize().timeout(const Duration(seconds: 3));
-    AppRouter.initializeNotificationRouting();
-  } catch (_) {}
+  await Future.wait([
+    FirebaseService.ensureAnonymousAuth()
+        .timeout(const Duration(seconds: 2))
+        .catchError((_) => null),
+    CrashlyticsService.initialize()
+        .timeout(const Duration(seconds: 1))
+        .catchError((_) => null),
+    AnalyticsService.initialize()
+        .timeout(const Duration(seconds: 1))
+        .catchError((_) => null),
+    NotificationService.initialize()
+        .timeout(const Duration(seconds: 2))
+        .catchError((_) => null),
+  ]);
+  AppRouter.initializeNotificationRouting();
 }

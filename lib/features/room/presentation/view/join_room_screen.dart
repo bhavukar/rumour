@@ -60,9 +60,8 @@ class _JoinRoomScreenState extends State<JoinRoomScreen>
       setState(() {
         _joinedRooms = rooms;
       });
-      for (final code in rooms) {
-        NotificationService.subscribeToRoom(code);
-      }
+      Future.wait(
+          rooms.map((code) => NotificationService.subscribeToRoom(code)));
       _syncRooms();
     } catch (_) {}
   }
@@ -207,12 +206,6 @@ class _JoinRoomScreenState extends State<JoinRoomScreen>
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final dividerColor =
         isDark ? const Color(0xFF222632) : const Color(0xFFE5E7EB);
-
-    final storage = context.read<LocalStorageService>();
-    final currentSaved = storage.getJoinedRooms();
-    if (_joinedRooms.length != currentSaved.length) {
-      _joinedRooms = currentSaved;
-    }
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -419,27 +412,17 @@ class _JoinRoomScreenState extends State<JoinRoomScreen>
                 return StreamBuilder<RoomModel?>(
                   stream: roomRepo.streamRoom(code),
                   builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.active &&
-                        !snapshot.hasData) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) {
-                          final storage = context.read<LocalStorageService>();
-                          storage.removeJoinedRoom(code);
-                          setState(() {
-                            _joinedRooms.remove(code);
-                          });
-                        }
-                      });
-                      return const SizedBox.shrink();
-                    }
-
                     final room = snapshot.data;
                     final memberCount = room?.memberCount ?? 1;
                     final lastTime = room?.lastMessageAt != null
                         ? DateFormatter.formatRelativeTime(room!.lastMessageAt!)
-                        : (room?.createdAt != null
-                            ? DateFormatter.formatRelativeTime(room!.createdAt)
-                            : '');
+                        : (cachedLatest != null
+                            ? DateFormatter.formatRelativeTime(
+                                cachedLatest.createdAt)
+                            : (room?.createdAt != null
+                                ? DateFormatter.formatRelativeTime(
+                                    room!.createdAt)
+                                : ''));
 
                     String? senderHandle;
                     String messageText = '';
