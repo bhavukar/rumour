@@ -146,27 +146,25 @@ export default {
         const fcmPayload = {
           message: {
             topic: topic,
-            notification: {
-              title: `Room #${cleanRoom}`,
-              body: `${senderName || 'Anonymous'}: ${text}`,
-            },
             data: {
               roomCode: cleanRoom,
               senderId: senderId || '',
+              senderName: senderName || 'Anonymous',
+              text: text || '',
+              title: `Room #${cleanRoom}`,
+              body: `${senderName || 'Anonymous'}: ${text}`,
               click_action: 'FLUTTER_NOTIFICATION_CLICK',
             },
             android: {
               priority: 'HIGH',
-              notification: {
-                channel_id: 'rumour_chat_notifications',
-                sound: 'default',
-              },
             },
             apns: {
+              headers: {
+                'apns-priority': '10',
+              },
               payload: {
                 aps: {
-                  sound: 'default',
-                  badge: 1,
+                  'content-available': 1,
                 },
               },
             },

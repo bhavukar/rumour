@@ -117,8 +117,11 @@ class _SettingsScreenState extends State<SettingsScreen>
                 Navigator.of(dialogContext).pop();
                 setState(() => _isResetting = true);
                 try {
+                  final joined = storage.getJoinedRooms();
+                  await Future.wait(joined
+                      .map((r) => NotificationService.unsubscribeFromRoom(r)));
                   await storage.clearAllSessionData();
-                  NotificationService.clearOnLogout();
+                  await NotificationService.clearOnLogout();
                   AnalyticsService.logAppDataCleared();
                 } catch (_) {}
 

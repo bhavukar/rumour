@@ -108,8 +108,8 @@ class RoomMembersSheet extends StatelessWidget {
                 HapticService.heavy();
                 nav.pop();
                 sheetNav.pop();
-                NotificationService.clearOnLogout(roomCode: roomCode);
                 try {
+                  await NotificationService.unsubscribeFromRoom(roomCode);
                   await storage.clearActiveRoom();
                   await storage.removeJoinedRoom(roomCode);
                   AnalyticsService.logRoomLeft(roomCode);

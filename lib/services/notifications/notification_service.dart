@@ -1,48 +1,105 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:rumour/services/logger/logger_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   try {
     await Firebase.initializeApp();
   } catch (_) {}
+
+  final data = message.data;
   LoggerService.info(
-    'FCM background message received: ${message.messageId} (title: ${message.notification?.title ?? message.data['title']})',
+    'FCM background message received: ${message.messageId} data: $data',
     tag: 'FCMBackground',
   );
 
-  if (message.notification == null && message.data.isNotEmpty) {
-    try {
-      final localNotifications = FlutterLocalNotificationsPlugin();
-      const androidDetails = AndroidNotificationDetails(
-        'rumour_chat_notifications',
-        'Rumour Chat Messages',
-        channelDescription: 'Notifications for new room chat messages',
-        importance: Importance.max,
-        priority: Priority.high,
-        color: Color(0xFFC6FE1E),
-        showWhen: true,
-      );
-      const details = NotificationDetails(android: androidDetails);
-      final title =
-          message.data['title'] ?? message.data['senderName'] ?? 'Rumour';
-      final body = message.data['body'] ??
-          message.data['text'] ??
-          'New message received';
-      final payload = message.data['roomCode'] ?? '';
+  final roomCode = (data['roomCode'] ?? '').toString().trim().toUpperCase();
+  if (roomCode.isEmpty) return;
 
-      await localNotifications.show(
-        id: DateTime.now().millisecondsSinceEpoch.remainder(100000),
-        title: title,
-        body: body,
-        notificationDetails: details,
-        payload: payload,
+  final senderId = (data['senderId'] ?? '').toString().trim();
+  final senderName = (data['senderName'] ?? '').toString().trim();
+  final text =
+      (data['text'] ?? data['body'] ?? message.notification?.body ?? '')
+          .toString()
+          .trim();
+
+  try {
+    final prefs = await SharedPreferences.getInstance();
+
+    // 1. SUPPRESS IF MESSAGE WAS SENT BY CURRENT USER / THIS DEVICE:
+    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+    if (currentUid != null && currentUid.isNotEmpty && senderId == currentUid) {
+      LoggerService.info(
+        'FCM suppressed: sender is current user ($senderId)',
+        tag: 'FCMBackground',
       );
-    } catch (_) {}
+      return;
+    }
+
+    final identityJson = prefs.getString('room_identity_$roomCode');
+    if (identityJson != null) {
+      try {
+        final decoded = json.decode(identityJson);
+        if (decoded['id'] == senderId) {
+          LoggerService.info(
+            'FCM suppressed: sender matches local room identity ($senderId)',
+            tag: 'FCMBackground',
+          );
+          return;
+        }
+      } catch (_) {}
+    }
+
+    // 2. SUPPRESS IF USER HAS LEFT THIS ROOM:
+    final joinedRooms = prefs.getStringList('joined_room_codes') ?? [];
+    if (!joinedRooms.contains(roomCode)) {
+      LoggerService.info(
+        'FCM suppressed: user has left room #$roomCode. Unsubscribing.',
+        tag: 'FCMBackground',
+      );
+      try {
+        await FirebaseMessaging.instance.unsubscribeFromTopic('room_$roomCode');
+      } catch (_) {}
+      return;
+    }
+
+    // 3. DISPLAY LOCAL NOTIFICATION:
+    final localNotifications = FlutterLocalNotificationsPlugin();
+    const androidDetails = AndroidNotificationDetails(
+      'rumour_chat_notifications',
+      'Rumour Chat Messages',
+      channelDescription: 'Notifications for new room chat messages',
+      importance: Importance.max,
+      priority: Priority.high,
+      color: Color(0xFFC6FE1E),
+      showWhen: true,
+      enableLights: true,
+      enableVibration: true,
+      playSound: true,
+    );
+    const details = NotificationDetails(android: androidDetails);
+    final title = 'Room #$roomCode';
+    final body = senderName.isNotEmpty && !text.startsWith('$senderName:')
+        ? '$senderName: $text'
+        : (text.isNotEmpty ? text : 'New message received');
+
+    await localNotifications.show(
+      id: roomCode.hashCode.remainder(100000),
+      title: title,
+      body: body,
+      notificationDetails: details,
+      payload: roomCode,
+    );
+  } catch (e, stackTrace) {
+    LoggerService.error('Error handling background FCM: $e',
+        tag: 'FCMBackground', error: e, stackTrace: stackTrace);
   }
 }
 
@@ -141,23 +198,81 @@ class NotificationService {
             .timeout(const Duration(seconds: 1));
       } catch (_) {}
 
-      FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
+        final data = message.data;
         LoggerService.info(
-          'FCM foreground message received: ${message.messageId} data: ${message.data}',
+          'FCM foreground message received: ${message.messageId} data: $data',
           tag: _tag,
         );
 
-        final title = message.notification?.title ??
-            message.data['senderName'] ??
-            'Rumour';
-        final body =
-            message.notification?.body ?? message.data['text'] ?? 'New message';
-        final roomCode = message.data['roomCode'] ?? '';
+        final roomCode =
+            (data['roomCode'] ?? '').toString().trim().toUpperCase();
+        if (roomCode.isEmpty) return;
+
+        // 1. SUPPRESS IF ACTIVELY VIEWING THIS ROOM:
+        if (activeVisibleRoomCode != null &&
+            activeVisibleRoomCode!.toUpperCase() == roomCode) {
+          LoggerService.debug(
+              'Suppressed foreground notification: actively viewing room $roomCode',
+              tag: _tag);
+          return;
+        }
+
+        final senderId = (data['senderId'] ?? '').toString().trim();
+        final senderName = (data['senderName'] ?? '').toString().trim();
+        final text =
+            (data['text'] ?? data['body'] ?? message.notification?.body ?? '')
+                .toString()
+                .trim();
+
+        // 2. SUPPRESS IF SENT BY CURRENT USER / THIS DEVICE:
+        final currentUid = FirebaseAuth.instance.currentUser?.uid;
+        if (currentUid != null &&
+            currentUid.isNotEmpty &&
+            senderId == currentUid) {
+          LoggerService.debug(
+              'Suppressed foreground notification: message was sent by current user ($senderId)',
+              tag: _tag);
+          return;
+        }
+
+        try {
+          final prefs = await SharedPreferences.getInstance();
+
+          final identityJson = prefs.getString('room_identity_$roomCode');
+          if (identityJson != null) {
+            try {
+              final decoded = json.decode(identityJson);
+              if (decoded['id'] == senderId) {
+                LoggerService.debug(
+                    'Suppressed foreground notification: sender matches room identity ($senderId)',
+                    tag: _tag);
+                return;
+              }
+            } catch (_) {}
+          }
+
+          // 3. SUPPRESS IF USER HAS LEFT THIS ROOM:
+          final joinedRooms = prefs.getStringList('joined_room_codes') ?? [];
+          if (!joinedRooms.contains(roomCode)) {
+            LoggerService.debug(
+                'Suppressed foreground notification: user is not in room $roomCode. Unsubscribing.',
+                tag: _tag);
+            unsubscribeFromRoom(roomCode);
+            return;
+          }
+        } catch (_) {}
+
+        final title = 'Room #$roomCode';
+        final body = senderName.isNotEmpty && !text.startsWith('$senderName:')
+            ? '$senderName: $text'
+            : (text.isNotEmpty ? text : 'New message received');
 
         showLocalNotification(
           title: title,
           body: body,
           payload: roomCode,
+          id: roomCode.hashCode.remainder(100000),
         );
       });
 
