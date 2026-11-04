@@ -109,19 +109,24 @@ class RoomRepository {
     final validRooms = <String>[];
     for (final code in roomCodes) {
       try {
-        final room = await remoteSource.fetchRoom(code);
-        if (room != null) {
-          validRooms.add(code);
-        } else {
+        final snap = await remoteSource
+            .getRoomSnapshot(code)
+            .timeout(const Duration(seconds: 2));
+
+        // Only prune if the remote server explicitly confirmed non-existence.
+        // Never prune if offline or if snapshot is from local cache!
+        if (snap != null && !snap.metadata.isFromCache && !snap.exists) {
           LoggerService.info(
-            'Room $code does not exist on remote. Pruning locally.',
+            'Room $code does not exist on remote server. Pruning locally.',
             tag: _tag,
           );
           await localSource.clearIdentity(code);
           await localSource.storageService.clearCachedMessages(code);
+        } else {
+          validRooms.add(code);
         }
       } catch (e) {
-        // Keep in case of network interruption
+        // Keep room in case of network interruption or timeout
         validRooms.add(code);
       }
     }

@@ -145,20 +145,46 @@ class RoomRemoteSource {
     final code = roomCode.trim().toUpperCase();
     try {
       LoggerService.debug('Fetching room doc $code from Firestore', tag: _tag);
-      final snap = await _roomDoc(code).get();
+      final snap = await _roomDoc(code)
+          .get(const GetOptions(source: Source.serverAndCache))
+          .timeout(const Duration(seconds: 2));
       if (!snap.exists) {
         LoggerService.debug('Room $code does not exist yet', tag: _tag);
         return null;
       }
       return RoomModel.fromFirestore(snap);
-    } catch (e, stackTrace) {
-      LoggerService.error(
-        'Error fetching room $code from Firestore',
+    } catch (e) {
+      LoggerService.warn(
+        'Error or timeout fetching room $code from Firestore: $e',
         tag: _tag,
-        error: e,
-        stackTrace: stackTrace,
       );
+      try {
+        final cacheSnap = await _roomDoc(code)
+            .get(const GetOptions(source: Source.cache))
+            .timeout(const Duration(seconds: 1));
+        if (cacheSnap.exists) {
+          return RoomModel.fromFirestore(cacheSnap);
+        }
+      } catch (_) {}
       rethrow;
+    }
+  }
+
+  Future<DocumentSnapshot<Map<String, dynamic>>?> getRoomSnapshot(
+      String roomCode) async {
+    final code = roomCode.trim().toUpperCase();
+    try {
+      return await _roomDoc(code)
+          .get(const GetOptions(source: Source.serverAndCache))
+          .timeout(const Duration(seconds: 2));
+    } catch (e) {
+      try {
+        return await _roomDoc(code)
+            .get(const GetOptions(source: Source.cache))
+            .timeout(const Duration(seconds: 1));
+      } catch (_) {
+        return null;
+      }
     }
   }
 

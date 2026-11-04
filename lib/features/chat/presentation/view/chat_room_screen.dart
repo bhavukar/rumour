@@ -23,6 +23,7 @@ import 'package:rumour/features/room/data/model/room_model.dart';
 import 'package:rumour/features/room/data/repositories/room_repository.dart';
 import 'package:rumour/features/room/presentation/widgets/room_members_sheet.dart';
 import 'package:rumour/services/haptics/haptic_service.dart';
+import 'package:rumour/services/network/connectivity_cubit.dart';
 import 'package:rumour/services/notifications/notification_service.dart';
 import 'package:rumour/utilities/date_formatter.dart';
 import 'package:rumour/utilities/room_name_generator.dart';
@@ -104,7 +105,13 @@ class _ChatRoomViewState extends State<_ChatRoomView> {
         .listen((room) {
       if (!mounted) return;
       if (room == null) {
-        _handleRoomDeleted();
+        try {
+          final isConnected =
+              context.read<ConnectivityCubit>().state.isConnected;
+          if (isConnected) {
+            _handleRoomDeleted();
+          }
+        } catch (_) {}
         return;
       }
       if (_roomCreatorId != room.createdBy) {

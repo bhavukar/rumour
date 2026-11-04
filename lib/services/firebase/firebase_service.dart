@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -20,12 +21,14 @@ class FirebaseService {
     _mockFirestore = firestore;
   }
 
-  static Future<void> initialize() async {
+  /// Fast local initialization: registers Firebase app in memory and enables
+  /// Firestore offline persistence. Never blocks on network calls.
+  static Future<void> initializeCore() async {
     try {
-      LoggerService.info('Initializing Firebase...', tag: _tag);
+      LoggerService.info('Initializing Firebase core...', tag: _tag);
       await Firebase.initializeApp(
         options: DefaultFirebaseOptions.currentPlatform,
-      );
+      ).timeout(const Duration(seconds: 2));
 
       FirebaseFirestore.instance.settings = const Settings(
         persistenceEnabled: true,
@@ -33,16 +36,19 @@ class FirebaseService {
       );
       LoggerService.info('Firebase & Firestore offline persistence enabled',
           tag: _tag);
-
-      await ensureAnonymousAuth();
     } catch (e, stackTrace) {
       LoggerService.warn(
-        'FirebaseService init warning (expected if running without live google-services in test environment): $e',
+        'Firebase core init warning (offline or test environment): $e',
         tag: _tag,
         error: e,
         stackTrace: stackTrace,
       );
     }
+  }
+
+  static Future<void> initialize() async {
+    await initializeCore();
+    unawaited(ensureAnonymousAuth());
   }
 
   static Future<User?> ensureAnonymousAuth() async {
@@ -52,7 +58,8 @@ class FirebaseService {
       if (user == null) {
         LoggerService.info('Signing in anonymously with Firebase Auth...',
             tag: _tag);
-        final userCredential = await auth.signInAnonymously();
+        final userCredential =
+            await auth.signInAnonymously().timeout(const Duration(seconds: 3));
         user = userCredential.user;
         LoggerService.info(
             'Successfully signed in anonymously with UID: ${user?.uid}',
@@ -66,7 +73,7 @@ class FirebaseService {
       if (user != null) {
         CrashlyticsService.setUserIdentifier(user.uid);
         AnalyticsService.setUserId(user.uid);
-        await syncUserToFirestore(user);
+        unawaited(syncUserToFirestore(user));
       }
 
       return user;
@@ -84,7 +91,9 @@ class FirebaseService {
   static Future<void> syncUserToFirestore(User user) async {
     try {
       final userDocRef = firestore.collection('users').doc(user.uid);
-      final docSnap = await userDocRef.get();
+      final docSnap = await userDocRef
+          .get(const GetOptions(source: Source.serverAndCache))
+          .timeout(const Duration(seconds: 2));
 
       if (!docSnap.exists) {
         final newUser = UserModel(
@@ -93,14 +102,16 @@ class FirebaseService {
           createdAt: DateTime.now(),
           lastSeenAt: DateTime.now(),
         );
-        await userDocRef.set(newUser.toFirestoreCreate());
+        await userDocRef
+            .set(newUser.toFirestoreCreate())
+            .timeout(const Duration(seconds: 2));
         LoggerService.info(
             'Created Firestore user document for anonymous UID: ${user.uid}',
             tag: _tag);
       } else {
         await userDocRef.update({
           'lastSeenAt': FieldValue.serverTimestamp(),
-        });
+        }).timeout(const Duration(seconds: 2));
         LoggerService.debug(
             'Updated lastSeenAt for user ${user.uid} in Firestore',
             tag: _tag);

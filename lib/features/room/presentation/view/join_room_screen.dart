@@ -74,7 +74,9 @@ class _JoinRoomScreenState extends State<JoinRoomScreen>
       final currentRooms = storage.getJoinedRooms();
       if (currentRooms.isEmpty) return;
 
-      final pruned = await roomRepo.syncAndPruneJoinedRooms(currentRooms);
+      final pruned = await roomRepo
+          .syncAndPruneJoinedRooms(currentRooms)
+          .timeout(const Duration(seconds: 3));
       if (mounted) {
         setState(() {
           _joinedRooms = pruned;

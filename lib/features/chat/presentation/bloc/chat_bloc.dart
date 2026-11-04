@@ -68,7 +68,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           error: error,
           stackTrace: stackTrace,
         );
-        emit(ChatError(error.toString()));
+        if (state is! ChatLoaded) {
+          emit(ChatError(error.toString()));
+        }
       },
     );
   }

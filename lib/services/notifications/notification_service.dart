@@ -114,21 +114,32 @@ class NotificationService {
 
       FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
-      final settings = await _fcm.requestPermission(
-        alert: true,
-        badge: true,
-        sound: true,
-        provisional: false,
-      );
-      LoggerService.info(
-          'FCM permission authorization status: ${settings.authorizationStatus}',
-          tag: _tag);
+      try {
+        final settings = await _fcm
+            .requestPermission(
+              alert: true,
+              badge: true,
+              sound: true,
+              provisional: false,
+            )
+            .timeout(const Duration(seconds: 2));
+        LoggerService.info(
+            'FCM permission authorization status: ${settings.authorizationStatus}',
+            tag: _tag);
+      } catch (e) {
+        LoggerService.warn('FCM requestPermission skipped or timed out: $e',
+            tag: _tag);
+      }
 
-      await _fcm.setForegroundNotificationPresentationOptions(
-        alert: true,
-        badge: true,
-        sound: true,
-      );
+      try {
+        await _fcm
+            .setForegroundNotificationPresentationOptions(
+              alert: true,
+              badge: true,
+              sound: true,
+            )
+            .timeout(const Duration(seconds: 1));
+      } catch (_) {}
 
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
         LoggerService.info(
@@ -160,16 +171,19 @@ class NotificationService {
         }
       });
 
-      final initialMessage = await _fcm.getInitialMessage();
-      if (initialMessage != null) {
-        final roomCode =
-            initialMessage.data['roomCode'] ?? initialMessage.data['roomId'];
-        LoggerService.info('Initial message from terminated state: $roomCode',
-            tag: _tag);
-        if (roomCode != null && roomCode is String && roomCode.isNotEmpty) {
-          onNotificationClicked?.call(roomCode);
+      try {
+        final initialMessage =
+            await _fcm.getInitialMessage().timeout(const Duration(seconds: 2));
+        if (initialMessage != null) {
+          final roomCode =
+              initialMessage.data['roomCode'] ?? initialMessage.data['roomId'];
+          LoggerService.info('Initial message from terminated state: $roomCode',
+              tag: _tag);
+          if (roomCode != null && roomCode is String && roomCode.isNotEmpty) {
+            onNotificationClicked?.call(roomCode);
+          }
         }
-      }
+      } catch (_) {}
 
       // ignore: deprecated_member_use
       _fcm.getToken().then((token) {
@@ -253,7 +267,9 @@ class NotificationService {
     final clean = roomCode.trim().toUpperCase();
     if (clean.isEmpty) return;
     try {
-      await _fcm.subscribeToTopic('room_$clean');
+      await _fcm
+          .subscribeToTopic('room_$clean')
+          .timeout(const Duration(seconds: 2));
       LoggerService.info('Subscribed to FCM topic: room_$clean', tag: _tag);
     } catch (e, stackTrace) {
       LoggerService.warn('Failed to subscribe to FCM topic room_$clean: $e',
@@ -265,7 +281,9 @@ class NotificationService {
     final clean = roomCode.trim().toUpperCase();
     if (clean.isEmpty) return;
     try {
-      await _fcm.unsubscribeFromTopic('room_$clean');
+      await _fcm
+          .unsubscribeFromTopic('room_$clean')
+          .timeout(const Duration(seconds: 2));
       LoggerService.info('Unsubscribed from FCM topic: room_$clean', tag: _tag);
     } catch (e, stackTrace) {
       LoggerService.warn('Failed to unsubscribe from FCM topic room_$clean: $e',
